@@ -1,137 +1,143 @@
+# 📘 Spécifications Techniques : Projet "RustGuard Vision"
 
-
-
-# Cahier des Charges : Système d'Analyse Vidéo et Reconnaissance Faciale en Rust
-
-## 1. Contexte et Objectifs
-Le but est de développer un logiciel backend performant capable de se connecter à des flux RTSP (caméras de surveillance), de détecter et reconnaître les visages, de stocker les métadonnées et d'offrir une interface pour identifier les clients récurrents.
-
-**Priorité absolue :** Optimisation des ressources (CPU/GPU) pour éviter le traitement redondant (ex: ne pas recalculer l'identité d'une personne 30 fois par seconde).
-
-## 2. Architecture Technique
-
-### 2.1 Stack Technologique (Rust Ecosystem)
-*   **Langage :** Rust (Edition 2021+).
-*   **Runtime Asynchrone :** `Tokio` (pour gérer plusieurs flux caméras simultanément).
-*   **Acquisition Vidéo :** `ffmpeg-next` ou `gstreamer-rs` (pour décoder les flux RTSP).
-*   **Inférence IA :** `ort` (binding Rust pour ONNX Runtime) ou `tch-rs` (LibTorch). *Recommandation : ONNX pour la portabilité et la vitesse.*
-*   **Vision par ordinateur :** `image` et `imageproc` pour les manipulations basiques, ou `opencv` (binding) si des prétraitements complexes sont nécessaires.
-*   **Base de Données :**
-    *   **Métadonnées & Vecteurs :** `Qdrant` (écrit en Rust, natif vecteur) ou `PostgreSQL` avec l'extension `pgvector`.
-*   **API/Backend Web :** `Axum` ou `Actix-web`.
+**Version :** 1.0
+**Stack :** Rust, Tauri, ONNX, PostgreSQL (pgvector)
+**Type :** Desktop Application (Cross-platform) avec Backend embarqué.
 
 ---
 
-## 3. Fonctionnalités Clés (Backend)
+## 1. Architecture Globale & Choix Technologiques
 
-### 3.1 Module d'Ingestion (Video Pipeline)
-*   **Connexion Multi-flux :** Le système doit accepter une liste d'URL RTSP (ex: `rtsp://admin:pass@192.168.1.x:554/stream`).
-*   **Décodage Intelligent :** Ne pas décoder toutes les frames si inutile. Viser un *sampling* (ex: traiter 5 à 10 frames par seconde au lieu de 30/60).
+Pour garantir performance (Rust) et une interface "magnifique" et moderne, nous utiliserons l'architecture suivante :
 
-### 3.2 Pipeline de Traitement (Core Logic)
-C'est ici que l'optimisation est critique. Le pipeline suit ces étapes :
-
-1.  **Détection de Mouvement (Pre-filter) :**
-    *   Si l'image ne change pas significativement par rapport à la précédente, on saute les calculs lourds.
-2.  **Détection de Visage (Face Detection) :**
-    *   Utilisation d'un modèle léger (ex: *UltraFace* ou *SCRFD*).
-    *   Extraction des "Bounding Boxes" (coordonnées du visage).
-3.  **Tracking d'Objet (Object Tracking) - *Point Critique d'Optimisation* :**
-    *   Implémentation d'un algorithme type **IOU Tracker** ou **SORT**.
-    *   **Logique :** Si un visage détecté à la frame `T` correspond spatialement au visage de la frame `T-1`, on lui assigne le même `Tracker_ID`.
-    *   **Règle :** On ne lance la reconnaissance faciale (étape 4) que **si le visage est nouveau** ou si la qualité de l'image du visage s'est considérablement améliorée (visage plus grand/plus face caméra).
-4.  **Extraction de Caractéristiques (Embeddings) :**
-    *   Utilisation d'un modèle type *ArcFace* ou *MobileFaceNet*.
-    *   Conversion de l'image du visage en un vecteur numérique (ex: vecteur de 512 float).
-    *   Calcul du "Score de Qualité" (netteté, angle). On ne garde que les visages de bonne qualité.
-
-### 3.3 Gestion des Données et Stockage
-*   **Stockage Image :** Sauvegarder le visage (crop) au format JPG/WebP sur le disque (nom de fichier : UUID).
-*   **Stockage DB :**
-    *   Enregistrement du vecteur.
-    *   Timestamp.
-    *   ID Caméra.
-    *   Lien vers l'image.
-
-### 3.4 Algorithme de Récurrence (Clustering)
-*   À chaque nouvelle détection validée, le système interroge la base vectorielle (recherche par similarité cosinus).
-*   **Seuil de tolérance :** Si distance < 0.4 (par exemple), c'est la même personne.
-    *   $\rightarrow$ On met à jour la date "Dernière vue".
-*   Sinon, c'est une nouvelle personne $\rightarrow$ Création nouvel ID.
+1.  **Core (Backend) :** Rust pur. Gestion des threads, ingestion vidéo, calculs mathématiques.
+2.  **AI Engine :** `ort` (Rust bindings pour ONNX Runtime) pour l'inférence matérielle accélérée.
+3.  **Frontend (GUI) :** **Tauri** (Rust + Webview). L'interface sera codée en **React (TypeScript)** ou **Svelte** avec **TailwindCSS** pour un design fluide et réactif.
+4.  **Base de Données :** **PostgreSQL** avec l'extension `pgvector` (Dockerisé ou local) pour la recherche vectorielle rapide.
 
 ---
 
-## 4. Interface Utilisateur (Frontend)
+## 2. Pipeline de Traitement Vidéo (Optimisation Stricte)
 
-L'interface peut être une WebApp (React/Vue) ou Desktop (Tauri + Rust).
+Le système **NE DOIT PAS** faire de reconnaissance faciale sur chaque frame. C'est la contrainte critique. Voici le pipeline séquentiel imposé :
 
-### 4.1 Dashboard "Live"
-*   Affichage des flux caméras.
-*   Incrustation (Overlay) des rectangles verts sur les visages détectés.
-
-### 4.2 Onglet "Analytique Récurrence" (Demande spécifique)
-Cette vue doit afficher une table ou une grille filtrée :
-*   **Filtre :** "Clients Fidèles" (Ceux vus aujourd'hui ET vus au moins X fois dans le passé).
-*   **Affichage :**
-    *   Photo de référence (la meilleure qualité capturée).
-    *   Photo du jour (capture instantanée).
-    *   Fréquence de visite (ex: "Vu 3 fois cette semaine").
-    *   Heure d'arrivée aujourd'hui.
+1.  **Ingestion :** Décodage du flux RTSP (via `ffmpeg-next` ou `gstreamer`).
+2.  **Filtre 1 - Skip Frame :** Ne traiter qu'une image toutes les N millisecondes (ex: 200ms).
+3.  **Filtre 2 - Motion Detection :** Calcul d'un delta simple sur l'histogramme des pixels. Si mouvement < seuil, on jette la frame.
+4.  **Filtre 3 - Face Detection (Léger) :** Modèle rapide (ex: UltraFace ou YuNet). Retourne des Bounding Boxes.
+5.  **Filtre 4 - Object Tracking (Logiciel) :** Algorithme SORT ou ByteTrack.
+    *   Si l'ID du visage est déjà suivi ("Tracked"), **ON NE LANCE PAS** la reconnaissance.
+    *   On met à jour uniquement les coordonnées.
+    *   On score la qualité de l'image (netteté, angle). On garde en cache la "Meilleure Image" de la séquence.
+6.  **Extraction (Lourd) :** Une fois que le visage quitte l'écran ou après un délai fixe (ex: 2s de présence), on prend la "Meilleure Image" cacheée -> Modèle ArcFace -> Vecteur 512d -> DB.
 
 ---
 
-## 5. Stratégie d'Optimisation (Rust Specifics)
+## 3. Base de Données & Modèle de Données
 
-Pour éviter les calculs inutiles, le code devra respecter ces principes :
+Le schéma doit être relationnel et vectoriel.
 
-1.  **Zero-Copy Parsing :** Utiliser des structures de données qui ne copient pas la mémoire vidéo inutilement.
-2.  **Concurrence (MPSC Channels) :**
-    *   Thread 1 (Decode) $\rightarrow$ Channel $\rightarrow$ Thread 2 (Detect/Track) $\rightarrow$ Channel $\rightarrow$ Thread 3 (Recognize/Store).
-    *   Si le buffer du Thread 3 est plein, le Thread 1 doit "dropper" (jeter) les frames pour ne pas saturer la latence (Backpressure).
-3.  **Filtrage Géographique (ROI) :** Permettre de définir des zones mortes (ex: plafond) pour ne pas y chercher de visages.
-4.  **Batch Processing :** Si GPU disponible, envoyer les images par lots (batch) au modèle ONNX plutôt qu'une par une.
+*   **Table `identities`** :
+    *   `id` (UUID, PK)
+    *   `label` (String - ex: "Client Inconnu 4402", ou Nom assigné manuellement)
+    *   `vector` (vector(512) - Empreinte biométrique moyenne)
+    *   `created_at` (Timestamp)
+    *   `last_seen` (Timestamp)
+    *   `visit_count` (Int)
+
+*   **Table `sightings` (Apparitions)** :
+    *   `id` (UUID, PK)
+    *   `identity_id` (FK -> identities)
+    *   `camera_source` (String)
+    *   `snapshot_uri` (String - Chemin vers le fichier image JPG stocké localement)
+    *   `confidence` (Float)
+    *   `timestamp` (Timestamp)
 
 ---
 
-## 6. Structure de la Base de Données (Exemple SQL)
+## 4. Spécifications de l'Interface Utilisateur (GUI)
+
+L'interface doit être "Easy & Magnificent". Utilisation de **Shadcn/UI** ou **Mantine** recommandée. Thème sombre par défaut, accents néons/modernes.
+
+### A. Dashboard "Live" (Vue Opérateur)
+*   Grille dynamique des caméras (1x1, 2x2, etc.).
+*   **Overlay AR :** Dessin des rectangles autour des visages en temps réel (Canvas HTML5 overlay sur le flux vidéo).
+*   **Sidebar "Derniers Passages" :** Flux défilant vertical à droite montrant les visages capturés dans les 5 dernières minutes avec l'heure.
+
+### B. Onglet "Analyse & Fréquentation" (Le besoin métier)
+*   **Section "Habitués" :**
+    *   Tableau filtrable : "Visiteurs vus plus de X fois ces Y derniers jours".
+    *   Affichage sous forme de cartes "Profil" avec la photo la plus nette.
+    *   Badge de statut : "Nouveau", "Régulier", "VIP" (basé sur la fréquence).
+*   **Graphiques :** Histogramme des visites par heure de la journée.
+
+### C. Onglet "Administration"
+*   Gestion des sources caméras (Ajout URL RTSP, Nom).
+*   Réglage des seuils (Seuil de confiance IA, Seuil de détection de mouvement).
+*   Bouton "Purger la base de données" (RGPD).
+
+---
+
+## 5. Roadmap de Développement & Checklist de Suivi
+
+Cochez les cases au fur et à mesure de l'avancement.
+
+### Phase 1 : Fondations & Infrastructure
+- [ ] **1.1 Setup Rust :** Initialiser projet Cargo workspace (Core + UI).
+- [ ] **1.2 Setup Tauri :** Configurer Tauri avec React/TypeScript/Vite.
+- [ ] **1.3 Database :** Monter un Docker PostgreSQL + pgvector et écrire les scripts de migration SQL (`sqlx`).
+- [ ] **1.4 Logging :** Mettre en place `tracing` pour les logs (console + fichier).
+
+### Phase 2 : Moteur de Vision (Backend Rust)
+- [ ] **2.1 Connexion RTSP :** Réussir à lire un flux vidéo et décoder les frames en mémoire (`opencv` ou `ffmpeg`).
+- [ ] **2.2 Motion Detector :** Implémenter la comparaison de pixels (frame diff) pour skipper les frames vides.
+- [ ] **2.3 Détection Visage :** Intégrer le modèle ONNX de détection. Dessiner les box dans la console/log.
+- [ ] **2.4 Tracking (SORT) :** Implémenter la logique d'ID unique tant que la personne est dans le cadre.
+
+### Phase 3 : Reconnaissance & Stockage
+- [ ] **3.1 Extraction Vecteur :** Intégrer le modèle ONNX de reconnaissance (ArcFace/MobileFace).
+- [ ] **3.2 Logique de Comparaison :** Coder la fonction Cosine Similarity.
+- [ ] **3.3 DB Insert :**
+    - [ ] Si distance < 0.4 (exemple) => UPDATE identity (last_seen, visit_count++).
+    - [ ] Sinon => INSERT new identity.
+- [ ] **3.4 Stockage Image :** Sauvegarder le crop du visage (JPG) sur le disque dur dans un dossier organisé par date.
+
+### Phase 4 : Interface Graphique (Frontend)
+- [ ] **4.1 Communication :** Mettre en place les Commandes Tauri (Frontend appelle Backend) et Events (Backend pousse les frames/alertes au Frontend).
+- [ ] **4.2 Vue Live :** Afficher le flux vidéo (via Canvas ou WebRTC local) et dessiner les rectangles reçus du backend.
+- [ ] **4.3 Vue Analyse :** Créer la page "Clients Quotidiens". Faire la requête SQL `SELECT ... GROUP BY ... HAVING count > X`.
+- [ ] **4.4 Design :** Appliquer le CSS (Tailwind), les animations de transition et le "Dark Mode".
+
+### Phase 5 : Packaging & Optimisation Finale
+- [ ] **5.1 Profiling :** Utiliser `flamegraph` pour vérifier qu'il n'y a pas de goulot d'étranglement CPU.
+- [ ] **5.2 Gestion Erreurs :** S'assurer que si une caméra se déconnecte, le programme ne plante pas (Retry loop).
+- [ ] **5.3 Build Release :** Compiler l'installateur (`.msi` ou `.deb`) via Tauri.
+
+---
+
+## 6. Contraintes de Sécurité (Strict)
+
+1.  **Memory Safety :** Utilisation exclusive de Rust Safe, pas de bloc `unsafe` sauf nécessité absolue dans les bindings FFI.
+2.  **Concurrency :** Utilisation de `Tokio` channels (`mpsc`) pour passer les images entre le thread de capture, le thread d'IA et le thread de DB. Ne jamais utiliser de Mutex bloquants sur le thread principal.
+3.  **Données :** Les vecteurs faciaux sont des données biométriques.
+    - [ ] Ajouter une option pour chiffrer la base de données.
+    - [ ] Ajouter une "Retention Policy" (suppression auto après 30 jours).
+
+---
+
+## 7. Exemple de Requête SQL "Clients Quotidiens" (Pour Phase 4.3)
 
 ```sql
--- Table des identités uniques (Personnes)
-CREATE TABLE visitors (
-    id UUID PRIMARY KEY,
-    first_seen_at TIMESTAMP DEFAULT NOW(),
-    last_seen_at TIMESTAMP DEFAULT NOW(),
-    visit_count INT DEFAULT 1,
-    best_face_image_path TEXT
-);
-
--- Table des événements (Passages)
-CREATE TABLE sightings (
-    id UUID PRIMARY KEY,
-    visitor_id UUID REFERENCES visitors(id),
-    camera_id INT,
-    captured_at TIMESTAMP DEFAULT NOW(),
-    embedding VECTOR(512), -- Nécessite pgvector
-    image_path TEXT,
-    confidence FLOAT
-);
+-- Récupérer les gens venus au moins 3 jours différents sur les 7 derniers jours
+SELECT 
+    i.id, 
+    i.label, 
+    count(DISTINCT date_trunc('day', s.timestamp)) as jours_de_visite,
+    MAX(s.timestamp) as derniere_venue
+FROM identities i
+JOIN sightings s ON i.id = s.identity_id
+WHERE s.timestamp > NOW() - INTERVAL '7 days'
+GROUP BY i.id
+HAVING count(DISTINCT date_trunc('day', s.timestamp)) >= 3
+ORDER BY jours_de_visite DESC;
 ```
-
-## 7. Étapes de Développement
-
-1.  **P:** Lire une vidéo, détecter les visages, dessiner un carré (sans reconnaissance).
-2.  **Intégration ONNX :** Ajouter l'extraction de vecteur (embedding) et comparer deux images statiques.
-3.  **Pipeline Async :** Implémenter le flux Gstreamer -> Tokio -> Inférence.
-4.  **Tracker & Optimisation :** Ajouter la logique "Si ID tracké existe, pas d'inférence".
-5.  **Base de données :** Connecter PostgreSQL/Qdrant.
-6.  **Frontend :** Créer l'onglet de récurrence.
-
----
-
-## Résumé des Crates Rust recommandées
-*   `tokio` : Runtime async.
-*   `ort` : Inférence ONNX (haute performance).
-*   `image` : Manipulation d'images.
-*   `sqlx` : Driver SQL asynchrone (performant et sûr).
-*   `anyhow` & `thiserror` : Gestion d'erreurs.
-*   `serde` : Sérialisation JSON.
