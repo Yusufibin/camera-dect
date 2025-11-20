@@ -16,14 +16,19 @@ Actuellement, le projet est une **implémentation squelette fonctionnelle (MVP)*
 ## Installation et Lancement
 
 1.  **Générer les données de test :**
-    Le pipeline a besoin d'une image "source" pour simuler le flux vidéo.
+    Le pipeline peut simuler un flux vidéo à partir d'une séquence d'images.
     ```bash
     cd video-analytics
     cargo run --bin generate_assets
     ```
-    Cela crée `assets/sample_frame.jpg`.
+    Cela crée `assets/sample_frame.jpg` (mode image simple) et `assets/video_seq/` (mode séquence vidéo).
 
-2.  **Lancer le serveur :**
+2.  **Configuration de la source :**
+    *   Par défaut, le programme cherche le dossier `assets/video_seq`. S'il existe, il joue la séquence en boucle.
+    *   Sinon, il utilise `assets/sample_frame.jpg`.
+    *   Pour utiliser vos propres vidéos, décomposez-les en images (ex: frame_001.jpg, frame_002.jpg...) et placez-les dans `assets/video_seq`.
+
+3.  **Lancer le serveur :**
     ```bash
     cargo run --bin video-analytics
     ```

@@ -5,12 +5,13 @@ mod storage;
 mod api;
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use crate::ingestion::MockVideoSource;
+use crate::ingestion::{MockVideoSource, FolderVideoSource, VideoSource};
 use crate::detection::MockFaceDetector;
 use crate::pipeline::{Pipeline, DetectionEvent};
 use crate::storage::MockStorage;
@@ -29,7 +30,16 @@ async fn main() -> anyhow::Result<()> {
     let (tx, _rx) = broadcast::channel::<DetectionEvent>(100);
 
     // Setup Pipeline Components
-    let video_source = Box::new(MockVideoSource::new("assets/sample_frame.jpg"));
+    let input_path = "assets/video_seq"; // Default to sequence folder if it exists, otherwise fall back or check
+
+    let video_source: Box<dyn VideoSource> = if Path::new(input_path).is_dir() {
+        info!("Using Folder Sequence Source at {}", input_path);
+        Box::new(FolderVideoSource::new(input_path)?)
+    } else {
+        info!("Using Single Image Source at assets/sample_frame.jpg");
+        Box::new(MockVideoSource::new("assets/sample_frame.jpg"))
+    };
+
     let detector = Box::new(MockFaceDetector);
     let storage = Arc::new(MockStorage);
 
