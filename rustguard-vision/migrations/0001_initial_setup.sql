@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS visits (
+    id BIGSERIAL PRIMARY KEY,
+    visitor_name TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    visited_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
