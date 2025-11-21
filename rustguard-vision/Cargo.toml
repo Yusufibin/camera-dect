@@ -2,6 +2,15 @@
 name = "rustguard-vision"
 version = "0.1.0"
 edition = "2021"
+authors = ["RustGuard Team <contact@rustguard.com>"]
+description = "A hybrid Rust/Qt6 application for video surveillance and analytics."
+license = "MIT"
+
+[package.metadata.wix]
+upgrade-guid = "846400AC-A715-444E-B750-3559992DB253"
+path-guid = "1566D8A6-6042-4030-88AF-9181ECEAD862"
+license = false
+eula = false
 
 [dependencies]
 cxx = { version = "1.0", optional = true }
